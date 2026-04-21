@@ -93,7 +93,7 @@ jobs:
       - run: pnpm build:electron
       - run: pnpm exec electron-builder --mac --publish never
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: electron-mac
           path: |
