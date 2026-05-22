@@ -26,6 +26,7 @@ const COPY_TOAST_ID = 'terminal-copy';
 const DEFAULT_FONT_SIZE = 12;
 const ESC = '\x1b';
 const POINTER_BLUR_GRACE_MS = 200;
+const SYNTHETIC_ESC_NUL_GRACE_MS = 100;
 
 const ALLOWED_LINK_PROTOCOLS = ['http:', 'https:'];
 
@@ -217,7 +218,14 @@ const useTerminal = ({ theme, fontSize = DEFAULT_FONT_SIZE, onInput, onResize, o
       terminalInstance.current = terminal;
       fitAddonRef.current = fitAddon;
 
+      let lastSyntheticEscAt = 0;
+      const sendSyntheticEsc = () => {
+        lastSyntheticEscAt = performance.now();
+        callbacksRef.current.onInput?.(ESC);
+      };
+
       terminal.onData((data) => {
+        if (data === '\x00' && performance.now() - lastSyntheticEscAt < SYNTHETIC_ESC_NUL_GRACE_MS) return;
         if (/^\x1b\[[\?>]?[\d;]*[cnR]$/.test(data)) return;
         callbacksRef.current.onInput?.(data);
       });
@@ -235,7 +243,7 @@ const useTerminal = ({ theme, fontSize = DEFAULT_FONT_SIZE, onInput, onResize, o
           !event.metaKey
         ) {
           // 일부 브라우저/PWA 포커스 경로에서는 xterm이 데이터를 emit하기 전에 첫 Escape가 유실될 수 있다.
-          callbacksRef.current.onInput?.(ESC);
+          sendSyntheticEsc();
           event.preventDefault();
           event.stopPropagation();
           return false;
@@ -297,7 +305,7 @@ const useTerminal = ({ theme, fontSize = DEFAULT_FONT_SIZE, onInput, onResize, o
           if (document.activeElement !== document.body) return;
           if (performance.now() - lastPointerDownAt < POINTER_BLUR_GRACE_MS) return;
 
-          callbacksRef.current.onInput?.(ESC);
+          sendSyntheticEsc();
           terminal.focus();
         });
       };
