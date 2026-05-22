@@ -24,6 +24,8 @@ interface IUseTerminalOptions {
 const COPY_TOAST_ID = 'terminal-copy';
 
 const DEFAULT_FONT_SIZE = 12;
+const ESC = '\x1b';
+const POINTER_BLUR_GRACE_MS = 200;
 
 const ALLOWED_LINK_PROTOCOLS = ['http:', 'https:'];
 
@@ -162,6 +164,7 @@ const useTerminal = ({ theme, fontSize = DEFAULT_FONT_SIZE, onInput, onResize, o
     let reFitTimer = 0;
     let resizeObserver: ResizeObserver | null = null;
     let cleanupTouch: (() => void) | null = null;
+    let cleanupFocusGuard: (() => void) | null = null;
 
     loadFonts().then(() => {
       if (disposed) return;
@@ -224,12 +227,25 @@ const useTerminal = ({ theme, fontSize = DEFAULT_FONT_SIZE, onInput, onResize, o
       });
 
       terminal.attachCustomKeyEventHandler((event) => {
+        if (
+          event.type === 'keydown' &&
+          event.key === 'Escape' &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey
+        ) {
+          callbacksRef.current.onInput?.(ESC);
+          event.preventDefault();
+          event.stopPropagation();
+          return false;
+        }
+
         // macOptionIsMeta가 이중 ESC를 보내는 키만 직접 매핑
         if (event.altKey && event.type === 'keydown') {
           const seq: Record<string, string> = {
-            ArrowLeft: '\x1bb',
-            ArrowRight: '\x1bf',
-            Backspace: '\x1b\x7f',
+            ArrowLeft: `${ESC}b`,
+            ArrowRight: `${ESC}f`,
+            Backspace: `${ESC}\x7f`,
           };
           if (seq[event.code]) {
             callbacksRef.current.onInput?.(seq[event.code]);
@@ -262,6 +278,33 @@ const useTerminal = ({ theme, fontSize = DEFAULT_FONT_SIZE, onInput, onResize, o
       });
 
       resizeObserver.observe(containerNode);
+
+      let lastPointerDownAt = 0;
+      const onPointerDown = () => {
+        lastPointerDownAt = performance.now();
+      };
+      const onFocusOut = (event: FocusEvent) => {
+        const target = event.target;
+        if (!(target instanceof HTMLTextAreaElement)) return;
+        if (!target.classList.contains('xterm-helper-textarea')) return;
+
+        requestAnimationFrame(() => {
+          if (disposed) return;
+          if (document.visibilityState !== 'visible') return;
+          if (document.activeElement !== document.body) return;
+          if (performance.now() - lastPointerDownAt < POINTER_BLUR_GRACE_MS) return;
+
+          callbacksRef.current.onInput?.(ESC);
+          terminal.focus();
+        });
+      };
+
+      document.addEventListener('pointerdown', onPointerDown, true);
+      containerNode.addEventListener('focusout', onFocusOut, true);
+      cleanupFocusGuard = () => {
+        document.removeEventListener('pointerdown', onPointerDown, true);
+        containerNode.removeEventListener('focusout', onFocusOut, true);
+      };
 
       // 모바일 터치 → 합성 WheelEvent 변환 (tmux 스크롤 지원)
       // tmux mouse mode 시 xterm.js가 .xterm-screen에 wheel 리스너를 붙이므로 해당 요소에 dispatch
@@ -309,6 +352,7 @@ const useTerminal = ({ theme, fontSize = DEFAULT_FONT_SIZE, onInput, onResize, o
       clearTimeout(reFitTimer);
       resizeObserver?.disconnect();
       cleanupTouch?.();
+      cleanupFocusGuard?.();
       terminalInstance.current?.dispose();
       terminalInstance.current = null;
       fitAddonRef.current = null;
