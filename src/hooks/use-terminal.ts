@@ -234,6 +234,7 @@ const useTerminal = ({ theme, fontSize = DEFAULT_FONT_SIZE, onInput, onResize, o
           !event.ctrlKey &&
           !event.metaKey
         ) {
+          // 일부 브라우저/PWA 포커스 경로에서는 xterm이 데이터를 emit하기 전에 첫 Escape가 유실될 수 있다.
           callbacksRef.current.onInput?.(ESC);
           event.preventDefault();
           event.stopPropagation();
@@ -279,6 +280,8 @@ const useTerminal = ({ theme, fontSize = DEFAULT_FONT_SIZE, onInput, onResize, o
 
       resizeObserver.observe(containerNode);
 
+      // Escape가 xterm helper textarea를 먼저 blur시키면 해당 blur를 Escape로 보정한다.
+      // 직전 pointer 입력은 터미널 밖 클릭/터치로 인한 blur일 가능성이 높으므로 입력을 합성하지 않는다.
       let lastPointerDownAt = 0;
       const onPointerDown = () => {
         lastPointerDownAt = performance.now();
