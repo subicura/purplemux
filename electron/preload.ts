@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showNotification: (title: string, body: string) => ipcRenderer.invoke('show-notification', title, body),
   openNewWindow: () => ipcRenderer.invoke('open-new-window'),
   setDockBadge: (count: number) => ipcRenderer.invoke('set-dock-badge', count),
+  getServerLaunchAgentStatus: () => ipcRenderer.invoke('server-launch-agent:get-status'),
+  setServerLaunchAgentEnabled: (enabled: boolean) =>
+    ipcRenderer.invoke('server-launch-agent:set-enabled', enabled),
   setLocale: (locale: string) => ipcRenderer.invoke('set-locale', locale),
   setNativeTheme: (theme: string) => ipcRenderer.invoke('set-native-theme', theme),
   registerBrowserTab: (tabId: string, webContentsId: number) =>

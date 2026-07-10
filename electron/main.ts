@@ -1,15 +1,30 @@
 import { capturePristineEnv } from './pristine-env';
 import { applyResolvedShellEnv } from './shell-env';
-import { app, BrowserWindow, shell, Menu, ipcMain, session, screen, Notification, nativeTheme, dialog } from 'electron';
+import { app, BrowserWindow, shell, Menu, ipcMain, session, screen, Notification, nativeTheme, dialog, type IpcMainInvokeEvent } from 'electron';
 import { autoUpdater, type UpdateInfo, type ProgressInfo } from 'electron-updater';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import * as http from 'http';
+import { execFileSync } from 'child_process';
 import { pickTaglines } from './splash-taglines';
 import { initBrowserBridge } from './browser-bridge';
 
 const isDev = process.env.NODE_ENV === 'development';
 const devUrl = process.env.ELECTRON_DEV_URL;
+
+const assertLocalRenderer = (event: IpcMainInvokeEvent) => {
+  const url = event.sender.getURL();
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+    if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && isLoopback) return;
+  } catch {
+    // fall through
+  }
+  throw new Error('Startup settings can only be changed from the local purplemux app.');
+};
 
 const fixEnv = () => {
   const additions = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
@@ -54,6 +69,11 @@ const MAX_RECENT_REMOTE_URLS = 10;
 
 const CONFIG_DIR = path.join(os.homedir(), '.purplemux');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+const PORT_FILE = path.join(CONFIG_DIR, 'port');
+const LAUNCH_AGENT_LABEL = 'com.subicura.purplemux.server';
+const LAUNCH_AGENT_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents');
+const LAUNCH_AGENT_FILE = path.join(LAUNCH_AGENT_DIR, `${LAUNCH_AGENT_LABEL}.plist`);
+const LAUNCH_AGENT_LOG_DIR = path.join(os.homedir(), 'Library', 'Logs', 'purplemux');
 
 const readAppConfig = (): IAppConfig => {
   try {
@@ -86,6 +106,190 @@ const writeServerConfig = (server: IServerConfig) => {
   const cfg = readAppConfig();
   cfg.server = server;
   writeAppConfig(cfg);
+};
+
+interface IServerLaunchAgentStatus {
+  supported: boolean;
+  enabled: boolean;
+  loaded: boolean;
+  stale: boolean;
+  path: string;
+  reason?: string;
+}
+
+const launchctlTarget = () => `gui/${process.getuid?.() ?? os.userInfo().uid}`;
+
+const launchctlService = () => `${launchctlTarget()}/${LAUNCH_AGENT_LABEL}`;
+
+const escapePlistValue = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+
+const isServerLaunchAgentSupported = (): { supported: boolean; reason?: string } => {
+  if (process.platform !== 'darwin') return { supported: false, reason: 'macOS only' };
+  if (!app.isPackaged) return { supported: false, reason: 'Available in packaged app only' };
+  if (process.execPath.startsWith('/Volumes/') || process.execPath.includes('/AppTranslocation/')) {
+    return { supported: false, reason: 'Move purplemux to Applications before enabling startup.' };
+  }
+  return { supported: true };
+};
+
+const buildServerLaunchAgentPlist = (): string => {
+  const appPath = app.getAppPath();
+  const appPathUnpacked = appPath.replace('app.asar', 'app.asar.unpacked');
+  const standaloneMods = path.join(appPath, '.next', 'standalone', 'node_modules');
+  const launcherPath = path.join(appPath, 'dist-electron', 'server-launcher.js');
+  const nodeHelperPath = path.resolve(path.dirname(process.execPath), '..', 'Resources', 'purplemux-node');
+  const pathEntries = [
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin',
+  ];
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>${escapePlistValue(LAUNCH_AGENT_LABEL)}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>${escapePlistValue(nodeHelperPath)}</string>
+      <string>${escapePlistValue(launcherPath)}</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>ELECTRON_RUN_AS_NODE</key>
+      <string>1</string>
+      <key>NODE_ENV</key>
+      <string>production</string>
+      <key>__PMUX_APP_DIR</key>
+      <string>${escapePlistValue(appPath)}</string>
+      <key>__PMUX_APP_DIR_UNPACKED</key>
+      <string>${escapePlistValue(appPathUnpacked)}</string>
+      <key>NODE_PATH</key>
+      <string>${escapePlistValue(standaloneMods)}</string>
+      <key>PATH</key>
+      <string>${escapePlistValue(pathEntries.join(':'))}</string>
+      <key>LANG</key>
+      <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+      <key>SuccessfulExit</key>
+      <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>${escapePlistValue(path.join(LAUNCH_AGENT_LOG_DIR, 'server.stdout.log'))}</string>
+
+    <key>StandardErrorPath</key>
+    <string>${escapePlistValue(path.join(LAUNCH_AGENT_LOG_DIR, 'server.stderr.log'))}</string>
+  </dict>
+</plist>
+`;
+};
+
+const isServerLaunchAgentLoaded = (): boolean => {
+  try {
+    execFileSync('/bin/launchctl', ['print', launchctlService()], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const isServerLaunchAgentCurrent = (): boolean => {
+  try {
+    return fs.readFileSync(LAUNCH_AGENT_FILE, 'utf-8') === buildServerLaunchAgentPlist();
+  } catch {
+    return false;
+  }
+};
+
+const getServerLaunchAgentStatus = (): IServerLaunchAgentStatus => {
+  const support = isServerLaunchAgentSupported();
+  const exists = fs.existsSync(LAUNCH_AGENT_FILE);
+  const current = support.supported && isServerLaunchAgentCurrent();
+  return {
+    supported: support.supported,
+    reason: support.reason,
+    enabled: current,
+    loaded: exists && isServerLaunchAgentLoaded(),
+    stale: exists && !current,
+    path: LAUNCH_AGENT_FILE,
+  };
+};
+
+const setServerLaunchAgentEnabled = async (enabled: boolean): Promise<IServerLaunchAgentStatus> => {
+  const support = isServerLaunchAgentSupported();
+  if (enabled && !support.supported) {
+    throw new Error(support.reason || 'Server launch agent is not supported.');
+  }
+
+  if (process.platform !== 'darwin') {
+    throw new Error('Server launch agent is macOS only.');
+  }
+
+  const shouldTakeOverLocalServer = !enabled && !!localPort && !serverShutdown && serverConfig.mode === 'local';
+  const takeoverWindows = shouldTakeOverLocalServer
+    ? BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed())
+    : [];
+  const previousPort = localPort;
+
+  const reloadTakeoverWindows = (port: number | null) => {
+    if (!port) return;
+    for (const win of takeoverWindows) {
+      if (win.isDestroyed()) continue;
+      win.loadURL(`http://localhost:${port}`);
+      clearSplashHistory(win);
+    }
+  };
+
+  for (const win of takeoverWindows) {
+    loadSplash(win);
+  }
+
+  try {
+    if (isServerLaunchAgentLoaded()) {
+      execFileSync('/bin/launchctl', ['bootout', launchctlService()], { stdio: 'ignore' });
+    }
+
+    if (!enabled) {
+      fs.rmSync(LAUNCH_AGENT_FILE, { force: true });
+      if (takeoverWindows.length > 0) {
+        const stopped = await waitForExistingLocalServerToStop(30_000);
+        reloadTakeoverWindows(stopped ? await startLocalServer() : previousPort);
+      }
+      return getServerLaunchAgentStatus();
+    }
+
+    fs.mkdirSync(LAUNCH_AGENT_DIR, { recursive: true });
+    fs.mkdirSync(LAUNCH_AGENT_LOG_DIR, { recursive: true });
+    fs.writeFileSync(LAUNCH_AGENT_FILE, buildServerLaunchAgentPlist(), { mode: 0o644 });
+    execFileSync('/bin/launchctl', ['bootstrap', launchctlTarget(), LAUNCH_AGENT_FILE], { stdio: 'ignore' });
+    execFileSync('/bin/launchctl', ['enable', launchctlService()], { stdio: 'ignore' });
+    execFileSync('/bin/launchctl', ['kickstart', '-k', launchctlService()], { stdio: 'ignore' });
+    return getServerLaunchAgentStatus();
+  } catch (err) {
+    // takeover 도중 실패하면 창이 splash에 갇히므로 마지막으로 알려진 서버로 복귀
+    reloadTakeoverWindows(localPort ?? previousPort);
+    throw err;
+  }
 };
 
 const readRecentRemoteUrls = (): string[] => {
@@ -475,10 +679,85 @@ const stopUpdateCheckTimer = () => {
 
 const DEFAULT_PORT = 8022;
 
+interface IServerHealth {
+  app?: string;
+  version?: string;
+}
+
+const getServerHealth = (port: number): Promise<IServerHealth | null> =>
+  new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/api/health`, { timeout: 1500 }, (res) => {
+      let body = '';
+      res.on('data', (chunk: Buffer) => {
+        body += chunk.toString('utf-8');
+      });
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(body) as IServerHealth;
+          resolve(data.app === 'purplemux' ? data : null);
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+
+const getExistingLocalServerPort = async (): Promise<number | null> => {
+  try {
+    const raw = fs.readFileSync(PORT_FILE, 'utf-8').trim();
+    const port = Number(raw);
+    if (!Number.isInteger(port) || port <= 0) return null;
+    return (await getServerHealth(port)) ? port : null;
+  } catch {
+    return null;
+  }
+};
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const waitForExistingLocalServerToStop = async (timeoutMs?: number): Promise<boolean> => {
+  const deadline = timeoutMs ? Date.now() + timeoutMs : null;
+  while (await getExistingLocalServerPort()) {
+    if (deadline && Date.now() >= deadline) return false;
+    await delay(2000);
+  }
+  return true;
+};
+
+const AGENT_RESTART_TIMEOUT_MS = 30_000;
+
+const getManagedServerPort = async (): Promise<number | null> => {
+  if (!isServerLaunchAgentSupported().supported) return null;
+  if (!getServerLaunchAgentStatus().loaded) return null;
+  const port = await getExistingLocalServerPort();
+  if (!port) return null;
+  const health = await getServerHealth(port);
+  if (health?.version === app.getVersion()) return port;
+
+  // 버전 불일치(주로 자동 업데이트 직후) → 에이전트를 재시작해 새 버전 서버로 교체
+  try {
+    execFileSync('/bin/launchctl', ['kickstart', '-k', launchctlService()], { stdio: 'ignore' });
+  } catch {
+    return null;
+  }
+  const deadline = Date.now() + AGENT_RESTART_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await delay(1000);
+    const restartedPort = await getExistingLocalServerPort();
+    if (!restartedPort) continue;
+    if ((await getServerHealth(restartedPort))?.version === app.getVersion()) return restartedPort;
+  }
+  return null;
+};
+
 const startLocalServer = async (): Promise<number> => {
   if (!cachedStart) {
     const appDir = process.env.__PMUX_APP_DIR!;
-    const appDirUnpacked = process.env.__PMUX_APP_DIR_UNPACKED || appDir;
     const standaloneMods = path.join(appDir, '.next', 'standalone', 'node_modules');
     process.env.NODE_PATH = [standaloneMods, process.env.NODE_PATH].filter(Boolean).join(':');
     require('module').Module._initPaths(); // eslint-disable-line @typescript-eslint/no-require-imports
@@ -790,6 +1069,21 @@ const loadSplash = (win: BrowserWindow) => {
   win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 };
 
+// splash/about:blank 엔트리가 히스토리에 남으면 마우스 뒤로가기 버튼으로 복귀 불가 상태에 빠짐
+const clearSplashHistory = (win: BrowserWindow) => {
+  win.webContents.once('did-finish-load', () => {
+    if (!win.isDestroyed()) win.webContents.navigationHistory.clear();
+  });
+};
+
+const prepareLocalServerEnv = () => {
+  process.env.NODE_ENV = 'production';
+  process.env.__PMUX_ELECTRON = '1';
+  const appPath = app.getAppPath();
+  process.env.__PMUX_APP_DIR = isDev ? process.cwd() : appPath;
+  process.env.__PMUX_APP_DIR_UNPACKED = isDev ? process.cwd() : appPath.replace('app.asar', 'app.asar.unpacked');
+};
+
 // --- Bootstrap ---
 
 const bootstrap = async () => {
@@ -806,11 +1100,7 @@ const bootstrap = async () => {
     return;
   }
 
-  process.env.NODE_ENV = 'production';
-  process.env.__PMUX_ELECTRON = '1';
-  const appPath = app.getAppPath();
-  process.env.__PMUX_APP_DIR = isDev ? process.cwd() : appPath;
-  process.env.__PMUX_APP_DIR_UNPACKED = isDev ? process.cwd() : appPath.replace('app.asar', 'app.asar.unpacked');
+  prepareLocalServerEnv();
 
   serverConfig = readServerConfig();
   currentLocale = readLocaleFromConfig();
@@ -818,13 +1108,6 @@ const bootstrap = async () => {
   // macOS: nativeTheme을 앱 테마와 동기화해야 비활성 트래픽 라이트가 올바른 대비로 렌더링됨
   const appTheme = readAppConfig().appTheme || 'dark';
   nativeTheme.themeSource = appTheme as 'dark' | 'light' | 'system';
-
-  // splash/about:blank 엔트리가 히스토리에 남으면 마우스 뒤로가기 버튼으로 복귀 불가 상태에 빠짐
-  const clearSplashHistory = (win: BrowserWindow) => {
-    win.webContents.once('did-finish-load', () => {
-      if (!win.isDestroyed()) win.webContents.navigationHistory.clear();
-    });
-  };
 
   if (serverConfig.mode === 'remote' && serverConfig.remoteUrl) {
     const win = createWindow('about:blank');
@@ -838,7 +1121,9 @@ const bootstrap = async () => {
     const win = createWindow('about:blank');
     loadSplash(win);
     await shellEnvReady;
-    const port = await startLocalServer();
+    const existingPort = await getManagedServerPort();
+    const port = existingPort ?? await startLocalServer();
+    if (existingPort) localPort = existingPort;
     win.loadURL(`http://localhost:${port}`);
     clearSplashHistory(win);
   }
@@ -897,6 +1182,19 @@ ipcMain.handle('open-new-window', () => {
 ipcMain.handle('set-dock-badge', (_event, count: number) => {
   if (process.platform !== 'darwin') return;
   app.dock.setBadge(count > 0 ? String(count) : '');
+});
+
+ipcMain.handle('server-launch-agent:get-status', (event) => {
+  assertLocalRenderer(event);
+  return getServerLaunchAgentStatus();
+});
+
+ipcMain.handle('server-launch-agent:set-enabled', (event, enabled: boolean) => {
+  assertLocalRenderer(event);
+  if (typeof enabled !== 'boolean') {
+    throw new Error('enabled must be a boolean');
+  }
+  return setServerLaunchAgentEnabled(enabled);
 });
 
 // --- System Resources ---

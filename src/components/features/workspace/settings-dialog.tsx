@@ -62,6 +62,26 @@ interface ISettingsItem {
   electronOnly?: boolean;
 }
 
+interface IServerLaunchAgentStatus {
+  supported: boolean;
+  enabled: boolean;
+  loaded: boolean;
+  stale: boolean;
+  path: string;
+  reason?: string;
+}
+
+interface IElectronStartupAPI {
+  platform?: string;
+  getServerLaunchAgentStatus: () => Promise<IServerLaunchAgentStatus>;
+  setServerLaunchAgentEnabled: (enabled: boolean) => Promise<IServerLaunchAgentStatus>;
+}
+
+const getElectronStartupAPI = () =>
+  typeof window !== 'undefined'
+    ? (window as unknown as { electronAPI?: Partial<IElectronStartupAPI> }).electronAPI
+    : undefined;
+
 const settingsItems: ISettingsItem[] = [
   { id: 'general', labelKey: 'general', icon: <Settings className="h-4 w-4" /> },
   { id: 'appearance', labelKey: 'appearance', icon: <Palette className="h-4 w-4" /> },
@@ -1060,6 +1080,56 @@ const SystemTab = () => {
   const hostEnvLocked = useConfigStore((s) => s.hostEnvLocked);
   const bindHostIsLocal = useConfigStore((s) => s.bindHostIsLocal);
   const [isCleaningUploads, setIsCleaningUploads] = useState(false);
+  const [startupStatus, setStartupStatus] = useState<IServerLaunchAgentStatus | null>(null);
+  const [startupBusy, setStartupBusy] = useState(false);
+
+  const electronStartupAPI = getElectronStartupAPI();
+  const isMacElectron = isElectron && electronStartupAPI?.platform === 'darwin';
+  const canManageStartup = isElectron
+    && isMacElectron
+    && typeof electronStartupAPI?.getServerLaunchAgentStatus === 'function'
+    && typeof electronStartupAPI?.setServerLaunchAgentEnabled === 'function';
+
+  useEffect(() => {
+    if (!canManageStartup) return;
+    const api = getElectronStartupAPI();
+    if (typeof api?.getServerLaunchAgentStatus !== 'function') return;
+    let cancelled = false;
+    api.getServerLaunchAgentStatus()
+      .then((status) => {
+        if (!cancelled) setStartupStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setStartupStatus({
+            supported: false,
+            enabled: false,
+            loaded: false,
+            stale: false,
+            path: '',
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canManageStartup]);
+
+  const handleStartupChange = async (enabled: boolean) => {
+    if (!canManageStartup) return;
+    const api = getElectronStartupAPI();
+    if (typeof api?.setServerLaunchAgentEnabled !== 'function') return;
+    setStartupBusy(true);
+    try {
+      const status = await api.setServerLaunchAgentEnabled(enabled);
+      setStartupStatus(status);
+      toast.success(enabled ? t('startupEnabled') : t('startupDisabled'));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : tc('error'));
+    } finally {
+      setStartupBusy(false);
+    }
+  };
 
   const handleCleanUploads = async () => {
     setIsCleaningUploads(true);
@@ -1147,6 +1217,27 @@ const SystemTab = () => {
           </div>
         )}
       </div>
+
+      {isMacElectron && (
+        <div className="flex items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <Label htmlFor="server-startup" className="text-sm font-medium">
+              {t('startServerAtLogin')}
+            </Label>
+            <p className="text-sm text-muted-foreground">
+              {startupStatus?.supported === false
+                ? t('startServerAtLoginUnsupported')
+                : t('startServerAtLoginDescription')}
+            </p>
+          </div>
+          <Switch
+            id="server-startup"
+            checked={!!(startupStatus?.enabled || startupStatus?.stale)}
+            onCheckedChange={handleStartupChange}
+            disabled={!canManageStartup || startupBusy || (!startupStatus?.supported && !startupStatus?.stale)}
+          />
+        </div>
+      )}
 
       {isElectron && (
         <div className="flex items-center justify-between">
