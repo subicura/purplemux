@@ -27,6 +27,7 @@ interface ICodexPanelProps {
   sessionName: string;
   cwd?: string;
   className?: string;
+  active?: boolean;
   onClose?: () => void;
   onNewSession?: () => void;
   onRestart?: () => void;
@@ -44,6 +45,7 @@ const CodexPanel = ({
   sessionName,
   cwd,
   className,
+  active,
   onClose: _onClose,
   onNewSession,
   onRestart,
@@ -344,6 +346,7 @@ const CodexPanel = ({
           sessionId={sessionId}
           sessionName={sessionName}
           tabId={tabId}
+          active={active}
           initMeta={initMeta}
           sessionStats={sessionStats}
           cliState={cliState}

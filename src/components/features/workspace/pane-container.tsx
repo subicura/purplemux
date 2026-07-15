@@ -1249,6 +1249,7 @@ const PaneContainer = memo(({ paneId, paneNumber }: IPaneContainerProps) => {
                   sessionName={activeTab.sessionName}
                   claudeSessionId={claudeSessionId}
                   cwd={activeTabCwd || activeTab.cwd}
+                  active={isFocused}
                   onClose={() => handleSwitchPanelType('terminal')}
                   onNewSession={handleNewClaudeSession}
                   scrollToBottomRef={scrollToBottomRef}
@@ -1264,6 +1265,7 @@ const PaneContainer = memo(({ paneId, paneNumber }: IPaneContainerProps) => {
                   tabId={activeTabId}
                   sessionName={activeTab.sessionName}
                   cwd={activeTabCwd || activeTab.cwd}
+                  active={isFocused}
                   onClose={() => handleSwitchPanelType('terminal')}
                   onNewSession={handleNewCodexSession}
                   onRestart={handleRestartCodexSession}

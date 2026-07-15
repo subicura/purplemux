@@ -323,6 +323,17 @@ body {
   color: var(--ui-gray);
 }
 
+/* 타임라인 검색 하이라이트 (CSS Custom Highlight API) */
+::highlight(timeline-search) {
+  background-color: color-mix(in oklch, var(--ui-amber) 30%, transparent);
+  color: var(--foreground);
+}
+
+::highlight(timeline-search-current) {
+  background-color: color-mix(in oklch, var(--claude-active) 45%, transparent);
+  color: var(--foreground);
+}
+
 @keyframes typing-dot {
   0%, 60%, 100% {
     opacity: 0.2;

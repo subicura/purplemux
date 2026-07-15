@@ -24,6 +24,7 @@ interface IClaudeCodePanelProps {
   claudeSessionId?: string | null;
   cwd?: string;
   className?: string;
+  active?: boolean;
   onClose?: () => void;
   onNewSession?: () => void;
   scrollToBottomRef?: React.MutableRefObject<(() => void) | undefined>;
@@ -39,6 +40,7 @@ const ClaudeCodePanel = ({
   claudeSessionId,
   cwd,
   className,
+  active,
   onClose,
   onNewSession,
   scrollToBottomRef,
@@ -312,6 +314,7 @@ const ClaudeCodePanel = ({
           sessionId={sessionId}
           sessionName={sessionName}
           tabId={tabId}
+          active={active}
           initMeta={initMeta}
           sessionStats={sessionStats}
           cliState={storeCliState}

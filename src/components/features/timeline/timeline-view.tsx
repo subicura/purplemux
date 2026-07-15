@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react';
+import { useHotkeys } from 'react-hotkeys-hook';
 import { useTranslations } from 'next-intl';
 import { Terminal, RefreshCw, OctagonX, LogOut, ChevronsUp, MessageSquareMore } from 'lucide-react';
 import { diffLines } from 'diff';
 import Spinner from '@/components/ui/spinner';
 import { useStickToBottom } from 'use-stick-to-bottom';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import type {
   ITimelineEntry,
   ITimelineExecCommandStream,
@@ -37,6 +39,10 @@ import McpToolCallItem from '@/components/features/timeline/mcp-tool-call-item';
 import PatchApplyItem from '@/components/features/timeline/patch-apply-item';
 import ContextCompactedItem from '@/components/features/timeline/context-compacted-item';
 import ErrorNoticeItem from '@/components/features/timeline/error-notice-item';
+import TimelineSearchBar from '@/components/features/timeline/timeline-search-bar';
+import { getEntryText } from '@/lib/timeline-entry-text';
+import { firstMatchRange } from '@/lib/timeline-search-dom';
+import { useTimelineSearchHighlight } from '@/hooks/use-timeline-search-highlight';
 import { reloadForReconnectRecovery, shouldPromptMobileReloadRecovery } from '@/lib/ws-reload-recovery';
 
 interface ITimelineViewProps {
@@ -56,6 +62,7 @@ interface ITimelineViewProps {
   onLoadMore: () => Promise<void>;
   hasMore: boolean;
   scrollToBottomRef?: React.MutableRefObject<(() => void) | undefined>;
+  active?: boolean;
 }
 
 const RESUME_TOKEN_THRESHOLD = 100_000;
@@ -560,6 +567,7 @@ const TimelineView = ({
   onLoadMore,
   hasMore,
   scrollToBottomRef,
+  active = true,
 }: ITimelineViewProps) => {
   const t = useTranslations('timeline');
   const needsInput = cliState === 'needs-input';
@@ -610,6 +618,84 @@ const TimelineView = ({
 
   const groupedItems = useMemo(() => groupTimelineEntries(entries), [entries]);
   const hasDisplayItems = groupedItems.length > 0;
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [matchIndex, setMatchIndex] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const matchIds = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [] as string[];
+    return groupedItems
+      .filter((item) => {
+        const text = item.type === 'tool-group'
+          ? [...item.toolCalls, ...item.toolResults].map(getEntryText).join(' ')
+          : getEntryText(item.entry);
+        return text.toLowerCase().includes(q);
+      })
+      .map((item) => item.id);
+  }, [groupedItems, searchQuery]);
+
+  const currentMatchId = matchIds[matchIndex] ?? null;
+
+  const handleSearchQueryChange = useCallback((value: string) => {
+    setSearchQuery(value);
+    setMatchIndex(0);
+  }, []);
+
+  const nextMatch = useCallback(() => {
+    setMatchIndex((i) => (matchIds.length === 0 ? 0 : (i + 1) % matchIds.length));
+  }, [matchIds.length]);
+
+  const prevMatch = useCallback(() => {
+    setMatchIndex((i) => (matchIds.length === 0 ? 0 : (i - 1 + matchIds.length) % matchIds.length));
+  }, [matchIds.length]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery('');
+    setMatchIndex(0);
+  }, []);
+
+  useHotkeys(
+    'mod+f',
+    () => {
+      setSearchOpen(true);
+      requestAnimationFrame(() => searchInputRef.current?.select());
+    },
+    { enableOnFormTags: true, preventDefault: true, enabled: active },
+  );
+
+  useEffect(() => {
+    if (!active && searchOpen) closeSearch();
+  }, [active, searchOpen, closeSearch]);
+
+  useEffect(() => {
+    if (!searchOpen || !currentMatchId) return;
+    const root = scrollRef.current;
+    const card = root?.querySelector(`[data-timeline-item="${CSS.escape(currentMatchId)}"]`);
+    if (!root || !(card instanceof HTMLElement)) return;
+    // 카드가 아니라 카드 안 첫 매치 키워드를 뷰 중앙으로 올려 눈이 바로 단어에 닿게 한다
+    const needle = searchQuery.trim().toLowerCase();
+    const range = needle ? firstMatchRange(card, needle) : null;
+    const rect = range?.getBoundingClientRect();
+    if (rect && rect.height > 0) {
+      const rootRect = root.getBoundingClientRect();
+      const target = rect.top - rootRect.top + root.scrollTop - root.clientHeight / 2;
+      root.scrollTop = Math.max(0, target);
+    } else {
+      card.scrollIntoView({ block: 'center', behavior: 'instant' });
+    }
+  }, [currentMatchId, searchOpen, searchQuery, scrollRef]);
+
+  useTimelineSearchHighlight({
+    scrollRef,
+    query: searchQuery,
+    enabled: searchOpen && active,
+    currentMatchId,
+    revision: groupedItems,
+  });
 
   const lastUserMessageId = useMemo(
     () => groupedItems.findLast((item) => item.type === 'entry' && item.entry.type === 'user-message')?.id ?? null,
@@ -871,6 +957,18 @@ const TimelineView = ({
 
   return (
     <div className="relative flex h-full flex-col">
+      {searchOpen && (
+        <TimelineSearchBar
+          query={searchQuery}
+          onQueryChange={handleSearchQueryChange}
+          matchCount={matchIds.length}
+          currentIndex={matchIndex}
+          onNext={nextMatch}
+          onPrev={prevMatch}
+          onClose={closeSearch}
+          inputRef={searchInputRef}
+        />
+      )}
       <div
         ref={scrollRef}
         className="flex-1 overflow-y-auto py-2 transition-opacity"
@@ -909,7 +1007,11 @@ const TimelineView = ({
             <div
               key={item.id}
               ref={item.id === anchorUserId ? anchorElRef : undefined}
-              className="px-4 py-1.5"
+              data-timeline-item={item.id}
+              className={cn(
+                'px-4 py-1.5',
+                searchOpen && item.id === currentMatchId && 'rounded-md bg-claude-active/5 ring-2 ring-claude-active/40',
+              )}
             >
               {item.type === 'tool-group' ? (
                 <ToolGroupItem toolCalls={item.toolCalls} toolResults={item.toolResults} />
