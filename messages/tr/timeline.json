@@ -1,4 +1,5 @@
 {
+  "copyAsMarkdown": "Markdown olarak kopyala",
   "requestCancelled": "İstek iptal edildi",
   "sessionExit": "Oturum sonlandı (/exit)",
   "connectionError": "Bağlantı hatası",

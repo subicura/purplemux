@@ -1,4 +1,5 @@
 {
+  "copyAsMarkdown": "Markdownでコピー",
   "requestCancelled": "リクエストがキャンセルされました",
   "sessionExit": "セッションが終了しました (/exit)",
   "connectionError": "接続エラー",

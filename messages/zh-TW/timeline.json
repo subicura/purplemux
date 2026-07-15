@@ -1,4 +1,5 @@
 {
+  "copyAsMarkdown": "複製為 Markdown",
   "requestCancelled": "請求已取消",
   "sessionExit": "工作階段已退出（/exit）",
   "connectionError": "連線錯誤",

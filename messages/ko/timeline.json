@@ -1,4 +1,5 @@
 {
+  "copyAsMarkdown": "마크다운으로 복사",
   "requestCancelled": "요청 취소됨",
   "sessionExit": "세션 종료(/exit)",
   "connectionError": "연결 오류",

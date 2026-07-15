@@ -1,4 +1,5 @@
 {
+  "copyAsMarkdown": "Копировать как Markdown",
   "requestCancelled": "Запрос отменён",
   "sessionExit": "Сессия завершена (/exit)",
   "connectionError": "Ошибка подключения",

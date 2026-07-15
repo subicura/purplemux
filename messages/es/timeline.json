@@ -1,4 +1,5 @@
 {
+  "copyAsMarkdown": "Copiar como Markdown",
   "requestCancelled": "Solicitud cancelada",
   "sessionExit": "Sesión finalizada (/exit)",
   "connectionError": "Error de conexión",
