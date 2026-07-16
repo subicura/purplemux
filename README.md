@@ -126,6 +126,7 @@ purplemux
 
 ```bash
 purplemux tab create -w WS -t codex-cli -n "fix auth"
+purplemux tab create -w WS -t claude-code -n "ask flow" -c 'claude --settings ~/.purplemux/hooks.json'
 purplemux tab create -w WS -t agent-sessions
 ```
 

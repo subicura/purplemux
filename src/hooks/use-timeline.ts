@@ -8,6 +8,7 @@ import type {
   TTimelineConnectionStatus,
 } from '@/types/timeline';
 import useTimelineWebSocket from '@/hooks/use-timeline-websocket';
+import { appendTimelineEntries } from '@/lib/timeline-append';
 
 interface IResumeCallbacks {
   onResumeStarted?: (payload: { sessionId: string; jsonlPath: string | null }) => void;
@@ -154,42 +155,7 @@ const useTimeline = ({
   }, []);
 
   const handleAppend = useCallback((newEntries: ITimelineEntry[]) => {
-    setEntries((prev) => {
-      const updated = [...prev];
-      for (const entry of newEntries) {
-        if (entry.type === 'user-message') {
-          const target = normalizeUserMessageText(entry.text);
-          const pendingIdx = updated.findIndex(
-            (e) => e.type === 'user-message' && e.pending && (e.attachmentPlaceholder || normalizeUserMessageText(e.text) === target),
-          );
-          if (pendingIdx !== -1) {
-            const pending = updated[pendingIdx] as ITimelineEntry & { type: 'user-message' };
-            updated[pendingIdx] = { ...entry, id: pending.id };
-            continue;
-          }
-        }
-        if (entry.type === 'tool-result') {
-          const status = entry.isError ? 'error' as const : 'success' as const;
-          const tcIdx = updated.findIndex(
-            (e) => e.type === 'tool-call' && e.toolUseId === entry.toolUseId,
-          );
-          if (tcIdx !== -1) {
-            const tc = updated[tcIdx] as ITimelineEntry & { type: 'tool-call'; status: string };
-            updated[tcIdx] = { ...tc, status };
-          } else {
-            const aqIdx = updated.findIndex(
-              (e) => e.type === 'ask-user-question' && e.toolUseId === entry.toolUseId,
-            );
-            if (aqIdx !== -1) {
-              const aq = updated[aqIdx] as ITimelineEntry & { type: 'ask-user-question'; status: string; answer?: string };
-              updated[aqIdx] = { ...aq, status, answer: entry.summary || undefined };
-            }
-          }
-        }
-        updated.push(entry);
-      }
-      return updated;
-    });
+    setEntries((prev) => appendTimelineEntries(prev, newEntries));
   }, []);
 
   const addPendingUserMessage = useCallback((text: string, options?: { autoHide?: boolean; attachmentPlaceholder?: boolean }): string => {

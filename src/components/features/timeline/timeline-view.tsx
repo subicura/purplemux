@@ -37,6 +37,7 @@ import McpToolCallItem from '@/components/features/timeline/mcp-tool-call-item';
 import PatchApplyItem from '@/components/features/timeline/patch-apply-item';
 import ContextCompactedItem from '@/components/features/timeline/context-compacted-item';
 import ErrorNoticeItem from '@/components/features/timeline/error-notice-item';
+import useTabStore from '@/hooks/use-tab-store';
 import { reloadForReconnectRecovery, shouldPromptMobileReloadRecovery } from '@/lib/ws-reload-recovery';
 
 interface ITimelineViewProps {
@@ -563,6 +564,13 @@ const TimelineView = ({
 }: ITimelineViewProps) => {
   const t = useTranslations('timeline');
   const needsInput = cliState === 'needs-input';
+  // 대기 중 AskUserQuestion은 전용 카드(AskUserQuestionItem)가 담당하므로 permission 카드를 중복 노출하지 않는다
+  const hasPendingAskQuestion = useMemo(
+    () => entries.some((e) => e.type === 'ask-user-question' && e.status === 'pending'),
+    [entries],
+  );
+  // plan mode 대기 중엔 tool_use가 JSONL에 없으므로, hook으로 받은 라이브 질문으로 폼을 렌더한다
+  const pendingQuestions = useTabStore((s) => (tabId ? s.tabs[tabId]?.pendingQuestions : undefined));
   const isCompacting = compactingSince != null && Date.now() - compactingSince < 60_000;
   const anchorElRef = useRef<HTMLDivElement | null>(null);
   const spacerRef = useRef<HTMLDivElement | null>(null);
@@ -918,7 +926,22 @@ const TimelineView = ({
               )}
             </div>
           ))}
-          {(shouldProbeResumeDialog || needsInput) && sessionName && (
+          {needsInput && pendingQuestions && pendingQuestions.length > 0 && !hasPendingAskQuestion && sessionName && (
+            <div className="px-4 py-1.5">
+              <AskUserQuestionItem
+                entry={{
+                  id: 'live-ask',
+                  type: 'ask-user-question',
+                  timestamp: Date.now(),
+                  toolUseId: 'live',
+                  questions: pendingQuestions,
+                  status: 'pending',
+                }}
+                sessionName={sessionName}
+              />
+            </div>
+          )}
+          {(shouldProbeResumeDialog || (needsInput && !hasPendingAskQuestion && !pendingQuestions?.length)) && sessionName && (
             <div className="px-4 py-1.5">
               <PermissionPromptItem
                 sessionName={sessionName}

@@ -18,9 +18,10 @@ import { CODEX_PROVIDER_ID } from '@/lib/providers/codex';
 import { findCodexSessionById } from '@/lib/providers/codex/session-detection';
 import { cacheCodexRateLimitsFromJsonl } from '@/lib/codex-rate-limits-cache';
 import { parsePermissionOptions } from '@/lib/permission-prompt';
+import { readEntriesBefore } from '@/lib/session-parser';
 import type { IPaneInfo } from '@/lib/tmux';
 import type { ITab } from '@/types/terminal';
-import type { TCliState } from '@/types/timeline';
+import type { IAskUserQuestionItem, TCliState } from '@/types/timeline';
 import type { ICurrentAction, TTerminalStatus, ITabStatusEntry, IClientTabStatusEntry, IStatusUpdateMessage, IRateLimitsCache, TEventName, ILastEvent } from '@/types/status';
 import type { ISessionHistoryEntry } from '@/types/session-history';
 import { addSessionHistoryEntry, updateSessionHistoryDismissedAt } from '@/lib/session-history';
@@ -69,6 +70,33 @@ const JSONL_WATCH_DEBOUNCE_MS = 100;
 const LAUNCH_READY_POLL_DELAYS_MS = [700, 1_500, 3_000, 5_000, 8_000] as const;
 
 const g = globalThis as unknown as { __ptStatusManager?: StatusManager };
+
+const areAskUserQuestionItemsEqual = (
+  a: IAskUserQuestionItem[] | null | undefined,
+  b: IAskUserQuestionItem[] | null | undefined,
+): boolean => {
+  if (!a && !b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((item, idx) => {
+    const other = b[idx];
+    if (!other) return false;
+    if (
+      item.question !== other.question
+      || item.header !== other.header
+      || item.multiSelect !== other.multiSelect
+      || item.allowCustomAnswer !== other.allowCustomAnswer
+      || item.options.length !== other.options.length
+    ) {
+      return false;
+    }
+    return item.options.every((option, optIdx) => {
+      const otherOption = other.options[optIdx];
+      return !!otherOption
+        && option.label === otherOption.label
+        && option.description === otherOption.description;
+    });
+  });
+};
 
 class StatusManager {
   private tabs = new Map<string, ITabStatusEntry>();
@@ -469,6 +497,7 @@ class StatusManager {
         agentSessionId: entry.agentSessionId,
         compactingSince: entry.compactingSince,
         permissionRequest: entry.permissionRequest,
+        pendingQuestions: entry.pendingQuestions,
         lastEvent: entry.lastEvent,
         eventSeq: entry.eventSeq,
       };
@@ -484,8 +513,9 @@ class StatusManager {
     entry.readyForReviewAt = newState === 'ready-for-review' ? Date.now() : null;
     entry.busySince = newState === 'busy' ? Date.now() : null;
     if (newState === 'busy') entry.dismissedAt = null;
-    if (prevState === 'needs-input' && newState !== 'needs-input' && entry.permissionRequest) {
-      entry.permissionRequest = null;
+    if (prevState === 'needs-input' && newState !== 'needs-input') {
+      if (entry.permissionRequest) entry.permissionRequest = null;
+      if (entry.pendingQuestions) entry.pendingQuestions = null;
     }
 
     if (newState === 'ready-for-review' && entry.jsonlPath) {
@@ -791,6 +821,13 @@ class StatusManager {
       entry.permissionRequest = meta.permissionRequest;
       changed = true;
     }
+    if (meta.askUserQuestionItems !== undefined) {
+      const nextQuestions = meta.askUserQuestionItems;
+      if (!areAskUserQuestionItemsEqual(entry.pendingQuestions, nextQuestions)) {
+        entry.pendingQuestions = nextQuestions;
+        changed = true;
+      }
+    }
 
     if (changed) {
       const provider = expectedProvider ?? getProvider(providerId);
@@ -811,6 +848,84 @@ class StatusManager {
     }
 
     return { tabId, cliState: entry.cliState };
+  }
+
+  async applyProviderStatuslineMeta(
+    providerId: string,
+    tmuxSession: string,
+    meta: { sessionId?: string | null; jsonlPath?: string | null },
+  ): Promise<void> {
+    const patch: IAgentHookMetaPatch = {};
+    if (meta.sessionId !== undefined) patch.sessionId = meta.sessionId;
+    if (meta.jsonlPath !== undefined) patch.jsonlPath = meta.jsonlPath;
+
+    const applied = Object.keys(patch).length > 0
+      ? this.applyAgentHookMeta(providerId, tmuxSession, patch)
+      : null;
+
+    const tabId = applied?.tabId ?? this.findTabIdBySession(tmuxSession);
+    if (!tabId) return;
+    const entry = this.tabs.get(tabId);
+    if (!entry) return;
+
+    const jsonlPath = meta.jsonlPath ?? entry.jsonlPath ?? null;
+    if (!jsonlPath) return;
+    if (providerId !== 'claude') return;
+
+    await this.syncPendingAskUserQuestion(providerId, entry, jsonlPath);
+  }
+
+  private async readLatestAskUserQuestionState(
+    jsonlPath: string,
+  ): Promise<{ found: boolean; questions: IAskUserQuestionItem[] | null }> {
+    const stat = await fs.stat(jsonlPath);
+    const { entries } = await readEntriesBefore(jsonlPath, stat.size, 200);
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const entry = entries[i];
+      if (entry.type === 'ask-user-question') {
+        return {
+          found: true,
+          questions: entry.status === 'pending' ? entry.questions : null,
+        };
+      }
+    }
+    return { found: false, questions: null };
+  }
+
+  private async syncPendingAskUserQuestion(
+    providerId: string,
+    entry: ITabStatusEntry,
+    jsonlPath: string,
+  ): Promise<void> {
+    let latest: { found: boolean; questions: IAskUserQuestionItem[] | null };
+    try {
+      latest = await this.readLatestAskUserQuestionState(jsonlPath);
+    } catch (err) {
+      hookLog.debug({ err, jsonlPath }, 'failed to read AskUserQuestion state from statusLine JSONL');
+      return;
+    }
+    if (!latest.found) return;
+
+    const tmuxSession = entry.tmuxSession;
+    if (latest.questions && latest.questions.length > 0) {
+      const alreadyNeedsInput = entry.cliState === 'needs-input'
+        && areAskUserQuestionItemsEqual(entry.pendingQuestions, latest.questions);
+      this.applyAgentHookMeta(providerId, tmuxSession, { askUserQuestionItems: latest.questions });
+      if (!alreadyNeedsInput) {
+        this.handleProviderEvent(providerId, tmuxSession, {
+          kind: 'notification',
+          notificationType: 'permission_prompt',
+        });
+      }
+      return;
+    }
+
+    if (entry.pendingQuestions) {
+      this.applyAgentHookMeta(providerId, tmuxSession, { askUserQuestionItems: null });
+    }
+    if (entry.cliState === 'needs-input') {
+      this.handleProviderEvent(providerId, tmuxSession, { kind: 'prompt-submit' });
+    }
   }
 
   private setCompacting(tabId: string, entry: ITabStatusEntry, since: number | null): void {
@@ -918,6 +1033,7 @@ class StatusManager {
       entry.lastAssistantMessage = null;
       entry.currentAction = null;
       entry.permissionRequest = null;
+      entry.pendingQuestions = null;
       const existingWatcher = this.jsonlWatchers.get(tabId);
       if (existingWatcher) {
         existingWatcher.watcher.close();
@@ -983,6 +1099,7 @@ class StatusManager {
       agentSessionId: entry.agentSessionId,
       compactingSince: entry.compactingSince,
       permissionRequest: entry.permissionRequest,
+      pendingQuestions: entry.pendingQuestions,
       lastEvent: entry.lastEvent,
       eventSeq: entry.eventSeq,
     };
@@ -1118,6 +1235,10 @@ class StatusManager {
     const { currentAction, lastAssistantSnippet, reset, interrupted, lastEntryTs } = await provider.readRuntimeSnapshot(jsonlPath);
     if (entry.agentProviderId === CODEX_PROVIDER_ID || entry.panelType === 'codex-cli') {
       cacheCodexRateLimitsFromJsonl(jsonlPath).catch(() => {});
+    }
+    const providerId = provider.id;
+    if (providerId === 'claude') {
+      await this.syncPendingAskUserQuestion(providerId, entry, jsonlPath);
     }
 
     if (

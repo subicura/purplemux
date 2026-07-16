@@ -55,10 +55,11 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
   }
 
   if (req.method === 'POST') {
-    const { workspaceId, name, panelType } = req.body as {
+    const { workspaceId, name, panelType, command } = req.body as {
       workspaceId?: string;
       name?: string;
       panelType?: string;
+      command?: string;
     };
     if (!workspaceId) {
       return res.status(400).json({ error: 'workspaceId is required' });
@@ -78,13 +79,14 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
       });
     }
     const resolvedType: TPanelType = panelType ? (panelType as TPanelType) : 'terminal';
+    const launchCommand = typeof command === 'string' && command.trim() ? command : undefined;
     const availability = await checkAgentAvailabilityForPanelType(resolvedType);
     if (!availability.ok) {
       return res.status(availability.status).json(toAgentAvailabilityError(availability));
     }
 
     try {
-      const tab = await addTabToPane(workspaceId, paneId, name, ws.directories[0], resolvedType);
+      const tab = await addTabToPane(workspaceId, paneId, name, ws.directories[0], resolvedType, launchCommand);
       if (!tab) return res.status(500).json({ error: 'Failed to create tab' });
       return res.status(201).json({
         tabId: tab.id,

@@ -88,11 +88,13 @@ const cmdTabCreate = async (args) => {
   const wsId = flagValue(args, '--workspace') || flagValue(args, '-w');
   const name = flagValue(args, '--name') || flagValue(args, '-n');
   const panelType = flagValue(args, '--type') || flagValue(args, '-t');
+  const command = flagValue(args, '--command') || flagValue(args, '-c');
   if (!wsId) die('--workspace is required');
   const { body } = await api('POST', '/api/cli/tabs', {
     workspaceId: wsId,
     ...(name ? { name } : {}),
     ...(panelType ? { panelType } : {}),
+    ...(command ? { command } : {}),
   });
   out(body);
 };
@@ -264,7 +266,8 @@ Usage: purplemux <command> [args...]
 Commands:
   workspaces                               List workspaces
   tab list [-w WS]                         List tabs (optionally scoped to workspace)
-  tab create -w WS [-n NAME] [-t TYPE]     Create a tab in workspace (type: terminal | claude-code | codex-cli | agent-sessions | web-browser | diff)
+  tab create -w WS [-n NAME] [-t TYPE] [-c CMD]
+                                          Create a tab in workspace (type: terminal | claude-code | codex-cli | agent-sessions | web-browser | diff)
   tab send -w WS TAB_ID CONTENT...         Send input to a tab
   tab status -w WS TAB_ID                  Tab status
   tab result -w WS TAB_ID                  Capture tab pane content

@@ -1,4 +1,4 @@
-import type { TCliState, TToolName } from '@/types/timeline';
+import type { TCliState, TToolName, IAskUserQuestionItem } from '@/types/timeline';
 import type { TPanelType } from '@/types/terminal';
 import type { ISessionHistoryEntry } from '@/types/session-history';
 import type { IPermissionRequest } from '@/types/codex-permission';
@@ -39,6 +39,7 @@ export interface ITabStatusEntry {
   dismissedAt?: number | null;
   compactingSince?: number | null;
   permissionRequest?: IPermissionRequest | null;
+  pendingQuestions?: IAskUserQuestionItem[] | null;
   processRetries?: number;
   jsonlPath?: string | null;
   lastEvent?: ILastEvent | null;
@@ -82,6 +83,7 @@ export interface IStatusUpdateMessage {
   dismissedAt?: number | null;
   compactingSince?: number | null;
   permissionRequest?: IPermissionRequest | null;
+  pendingQuestions?: IAskUserQuestionItem[] | null;
   lastEvent?: ILastEvent | null;
   eventSeq?: number;
 }

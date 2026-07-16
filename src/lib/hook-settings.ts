@@ -24,7 +24,35 @@ TOKEN_FILE="$HOME/.purplemux/cli-token"
 [ -f "$TOKEN_FILE" ] || exit 0
 PORT=$(cat "$PORT_FILE")
 TOKEN=$(cat "$TOKEN_FILE")
-SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null) || SESSION=""
+
+resolve_tmux_session() {
+  SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null || true)
+  if [ -n "$SESSION" ]; then
+    printf '%s\\n' "$SESSION"
+    return
+  fi
+
+  PID=$$
+  while [ -n "$PID" ] && [ "$PID" != "1" ]; do
+    SESSION=$(tmux -L purple list-panes -a -F '#{session_name} #{pane_pid}' 2>/dev/null | awk -v pid="$PID" '$2 == pid { print $1; exit }')
+    if [ -n "$SESSION" ]; then
+      printf '%s\\n' "$SESSION"
+      return
+    fi
+    PID=$(ps -o ppid= -p "$PID" 2>/dev/null | tr -d ' ')
+  done
+}
+
+SESSION=$(resolve_tmux_session)
+
+if [ "$EVENT" = "pre-tool-use" ] || [ "$EVENT" = "post-tool-use" ]; then
+  curl -sS -X POST -o /dev/null \\
+    -H "x-pmux-token: \${TOKEN}" \\
+    -H "Content-Type: application/json" \\
+    --data-binary @- \\
+    "http://localhost:\${PORT}/api/status/hook?event=\${EVENT}&session=\${SESSION}" 2>/dev/null || true
+  exit 0
+fi
 
 NOTIFICATION_TYPE=""
 if [ "$EVENT" = "notification" ]; then
@@ -49,7 +77,26 @@ TOKEN_FILE="$HOME/.purplemux/cli-token"
 [ -f "$TOKEN_FILE" ] || exit 0
 PORT=$(cat "$PORT_FILE")
 TOKEN=$(cat "$TOKEN_FILE")
-SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null) || SESSION=""
+
+resolve_tmux_session() {
+  SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null || true)
+  if [ -n "$SESSION" ]; then
+    printf '%s\\n' "$SESSION"
+    return
+  fi
+
+  PID=$$
+  while [ -n "$PID" ] && [ "$PID" != "1" ]; do
+    SESSION=$(tmux -L purple list-panes -a -F '#{session_name} #{pane_pid}' 2>/dev/null | awk -v pid="$PID" '$2 == pid { print $1; exit }')
+    if [ -n "$SESSION" ]; then
+      printf '%s\\n' "$SESSION"
+      return
+    fi
+    PID=$(ps -o ppid= -p "$PID" 2>/dev/null | tr -d ' ')
+  done
+}
+
+SESSION=$(resolve_tmux_session)
 
 curl -sS -X POST -o /dev/null \\
   -H "x-pmux-token: \${TOKEN}" \\
@@ -59,9 +106,9 @@ curl -sS -X POST -o /dev/null \\
 exit 0
 `;
 
-const hookEntry = (event: string, timeout = 3) => [
+const hookEntry = (event: string, matcher = '', timeout = 3) => [
   {
-    matcher: '',
+    matcher,
     hooks: [
       {
         type: 'command',
@@ -81,6 +128,8 @@ const buildHookSettings = () => ({
     StopFailure: hookEntry('stop'),
     PreCompact: hookEntry('pre-compact'),
     PostCompact: hookEntry('post-compact'),
+    PreToolUse: hookEntry('pre-tool-use', 'AskUserQuestion'),
+    PostToolUse: hookEntry('post-tool-use', 'AskUserQuestion'),
   },
   statusLine: {
     type: 'command' as const,

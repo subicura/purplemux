@@ -14,7 +14,6 @@ import type {
   ITimelineTaskProgress,
   ITimelinePlan,
   ITimelineAskUserQuestion,
-  IAskUserQuestionItem,
   ITimelineInterrupt,
   ITimelineSessionExit,
   ITimelineTurnEnd,
@@ -24,6 +23,7 @@ import type {
   IChunkReadResult,
   TToolStatus,
 } from '@/types/timeline';
+import { parseAskUserQuestionInput } from '@/lib/ask-user-question-parse';
 
 export const INTERRUPT_PREFIX = '[Request interrupted by user';
 
@@ -367,24 +367,12 @@ const parseSingleEntry = (raw: unknown, base: z.infer<typeof BaseEntrySchema>): 
             status: taskStatus,
           } satisfies ITimelineTaskProgress);
         } else if (toolName === 'AskUserQuestion' && Array.isArray(input.questions)) {
-          const questions = (input.questions as Record<string, unknown>[]).map((q) => ({
-            question: String(q.question ?? ''),
-            header: String(q.header ?? ''),
-            options: Array.isArray(q.options)
-              ? (q.options as Record<string, unknown>[]).map((o) => ({
-                  label: String(o.label ?? ''),
-                  description: String(o.description ?? ''),
-                }))
-              : [],
-            multiSelect: Boolean(q.multiSelect),
-          } satisfies IAskUserQuestionItem));
-
           entries.push({
             id: nanoid(),
             type: 'ask-user-question',
             timestamp,
             toolUseId,
-            questions,
+            questions: parseAskUserQuestionInput(input),
             status: 'pending' as TToolStatus,
           } satisfies ITimelineAskUserQuestion);
         } else {
@@ -520,6 +508,7 @@ const parseSingleEntry = (raw: unknown, base: z.infer<typeof BaseEntrySchema>): 
           toolUseId: c.tool_use_id,
           isError: c.is_error ?? false,
           summary: summaryText,
+          ...(answers && { answers }),
         } satisfies ITimelineToolResult);
       }
     }
@@ -634,6 +623,9 @@ const mergeToolResults = (entries: ITimelineEntry[]): ITimelineEntry[] => {
           askQuestion.status = status;
           if (entry.summary) {
             askQuestion.answer = entry.summary;
+          }
+          if (entry.answers) {
+            askQuestion.answers = entry.answers;
           }
         } else {
           const plan = planMap.get(entry.toolUseId);

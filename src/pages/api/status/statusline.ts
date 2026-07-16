@@ -7,6 +7,7 @@ import { verifyCliToken } from '@/lib/cli-token';
 import { writeProviderRateLimits } from '@/lib/rate-limits-cache';
 import { writeSessionStats, readSessionStats } from '@/lib/session-stats';
 import { broadcastSessionStats } from '@/lib/timeline-server';
+import { getStatusManager } from '@/lib/status-manager';
 import { createLogger } from '@/lib/logger';
 import type { ISessionStats } from '@/types/timeline';
 
@@ -144,6 +145,25 @@ const persistSessionStatsIfPresent = async (input: IClaudeStatusInput): Promise<
   }
 };
 
+const applyStatuslineMetaIfPresent = async (
+  req: NextApiRequest,
+  input: IClaudeStatusInput,
+): Promise<void> => {
+  const provider = typeof req.query.provider === 'string' && req.query.provider
+    ? req.query.provider
+    : 'claude';
+  const tmuxSession = typeof req.query.tmuxSession === 'string'
+    ? req.query.tmuxSession
+    : '';
+  if (!tmuxSession) return;
+  if (!input.session_id && !input.transcript_path) return;
+
+  await getStatusManager().applyProviderStatuslineMeta(provider, tmuxSession, {
+    sessionId: input.session_id,
+    jsonlPath: input.transcript_path,
+  });
+};
+
 const handler = async (req: NextApiRequest, res: NextApiResponse) => {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -158,6 +178,9 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
   await Promise.all([
     writeRateLimitsIfPresent(input),
     persistSessionStatsIfPresent(input),
+    applyStatuslineMetaIfPresent(req, input).catch((err) => {
+      log.debug({ err }, 'failed to apply statusLine metadata');
+    }),
   ]);
 
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');

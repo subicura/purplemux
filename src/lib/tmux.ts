@@ -371,6 +371,18 @@ export const sendRawKeys = async (
   );
 };
 
+export const sendLiteralInput = async (
+  sessionName: string,
+  input: string,
+): Promise<void> => {
+  await exitCopyMode(sessionName);
+  await execFile(
+    'tmux',
+    ['-L', TMUX_SOCKET, 'send-keys', '-l', '-t', sessionName, input],
+    { timeout: CMD_TIMEOUT },
+  );
+};
+
 /** Send text via bracketed paste mode and press Enter twice (handles Claude Code long input confirmation) */
 export const sendBracketedPaste = async (
   sessionName: string,
