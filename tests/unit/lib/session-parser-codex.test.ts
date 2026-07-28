@@ -169,6 +169,120 @@ describe('parseCodexContent', () => {
     expect(entries).toHaveLength(0);
   });
 
+  it('shows commands nested in Codex exec custom tool calls', () => {
+    const call = {
+      timestamp: '2026-05-02T11:41:00.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        call_id: 'call-exec-1',
+        name: 'exec',
+        status: 'completed',
+        input: [
+          'const results = await Promise.all([',
+          '  tools.exec_command({ cmd: "pnpm tsc --noEmit", workdir: "/workspace" }),',
+          '  tools.exec_command({ cmd: `pnpm lint`, workdir: "/workspace" }),',
+          ']);',
+          'text(results);',
+        ].join('\n'),
+      },
+    };
+
+    const entries = parseCodexContent(`${JSON.stringify(call)}\n`);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      type: 'tool-call',
+      toolName: 'Bash',
+      summary: '$ pnpm tsc --noEmit\n$ pnpm lint',
+      status: 'success',
+    });
+  });
+
+  it('uses a bounded source preview for dynamic Codex exec commands', () => {
+    const call = {
+      timestamp: '2026-05-02T11:42:00.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        call_id: 'call-exec-2',
+        name: 'exec',
+        status: 'completed',
+        input: [
+          'const commands = ["pnpm test", "pnpm lint"];',
+          'await Promise.all(commands.map((cmd) => tools.exec_command({ cmd, workdir: "/workspace" })));',
+          `text("${'x'.repeat(1_000)}");`,
+        ].join('\n'),
+      },
+    };
+
+    const entries = parseCodexContent(`${JSON.stringify(call)}\n`);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      type: 'tool-call',
+      toolName: 'Bash',
+      status: 'success',
+    });
+    if (entries[0].type !== 'tool-call') throw new Error('Expected a tool call');
+    expect(entries[0].summary).toContain('exec_command (dynamic)');
+    expect(entries[0].summary).toContain('pnpm test');
+    expect(entries[0].summary.length).toBeLessThan(400);
+  });
+
+  it('does not extract fake commands from strings or comments', () => {
+    const call = {
+      timestamp: '2026-05-02T11:43:00.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        call_id: 'call-exec-3',
+        name: 'exec',
+        status: 'completed',
+        input: [
+          'const sample = \'tools.exec_command({ cmd: "rm -rf fake" })\';',
+          '// tools.exec_command({ cmd: "rm -rf comment" });',
+          'const result = await tools.update_plan({ plan: [] });',
+          'text(result);',
+        ].join('\n'),
+      },
+    };
+
+    const entries = parseCodexContent(`${JSON.stringify(call)}\n`);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      type: 'tool-call',
+      toolName: 'exec',
+      summary: 'exec → update_plan',
+    });
+  });
+
+  it('bounds Codex exec input scanning and fallback size', () => {
+    const call = {
+      timestamp: '2026-05-02T11:44:00.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        call_id: 'call-exec-4',
+        name: 'exec',
+        status: 'completed',
+        input: `const padding = "${'x'.repeat(70_000)}";\ntools.exec_command({ cmd: "must-not-scan" });`,
+      },
+    };
+
+    const entries = parseCodexContent(`${JSON.stringify(call)}\n`);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      type: 'tool-call',
+      toolName: 'exec',
+    });
+    if (entries[0].type !== 'tool-call') throw new Error('Expected a tool call');
+    expect(entries[0].summary).not.toContain('must-not-scan');
+    expect(entries[0].summary.length).toBeLessThan(350);
+  });
+
   it('preserves UTF-8 messages across tail pagination', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'purplemux-codex-utf8-'));
     const jsonlPath = path.join(dir, 'session.jsonl');

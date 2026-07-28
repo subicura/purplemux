@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { createLogger } from '@/lib/logger';
+import { summarizeCodexExecInput } from '@/lib/codex-exec-summary';
 import { uploadPathToImageUrl } from '@/lib/uploads-store';
 import type {
   IIncrementalResult,
@@ -429,13 +430,16 @@ const processResponseItem = (
         };
         return [entry];
       }
-      const summary = summarizeFunctionCall(name, payload.input);
+      const execSummary = name === 'exec' && typeof payload.input === 'string'
+        ? summarizeCodexExecInput(payload.input)
+        : null;
+      const summary = execSummary?.summary ?? summarizeFunctionCall(name, payload.input);
       const entry: ITimelineToolCall = {
         id: nanoid(),
         type: 'tool-call',
         timestamp,
         toolUseId: callId,
-        toolName: name,
+        toolName: execSummary?.toolName ?? name,
         summary,
         status: safeString(payload.status) === 'completed' ? 'success' : 'pending',
       };
