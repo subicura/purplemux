@@ -11,6 +11,7 @@ import type { ITerminalThemeColors } from "@/lib/terminal-themes";
 import { createMultilineUrlLinkProvider } from "@/lib/multiline-url-link-provider";
 import { copyToClipboard } from "@/lib/clipboard";
 import { DEFAULT_LINE_HEIGHT } from "@/lib/terminal-line-height";
+import { attachTerminalHangulInput } from "@/lib/terminal-hangul-input";
 import isElectron from "@/hooks/use-is-electron";
 
 interface IUseTerminalOptions {
@@ -75,6 +76,7 @@ const useTerminal = ({ theme, fontSize = DEFAULT_FONT_SIZE, lineHeight = DEFAULT
     setContainerNode(node);
   }, []);
   const terminalInstance = useRef<Terminal | null>(null);
+  const hangulInputRef = useRef<ReturnType<typeof attachTerminalHangulInput> | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const writeQueueRef = useRef<Uint8Array[]>([]);
   const isWritingRef = useRef(false);
@@ -149,6 +151,7 @@ const useTerminal = ({ theme, fontSize = DEFAULT_FONT_SIZE, lineHeight = DEFAULT
   const reset = useCallback(() => {
     writeQueueRef.current = [];
     isWritingRef.current = false;
+    hangulInputRef.current?.reset();
     terminalInstance.current?.reset();
   }, []);
 
@@ -212,6 +215,7 @@ const useTerminal = ({ theme, fontSize = DEFAULT_FONT_SIZE, lineHeight = DEFAULT
       terminal.loadAddon(new ClipboardAddon(undefined, clipboardProvider));
 
       terminal.open(containerNode);
+      hangulInputRef.current = attachTerminalHangulInput(terminal);
 
       terminalInstance.current = terminal;
       fitAddonRef.current = fitAddon;
@@ -318,6 +322,8 @@ const useTerminal = ({ theme, fontSize = DEFAULT_FONT_SIZE, lineHeight = DEFAULT
       clearTimeout(reFitTimer);
       resizeObserver?.disconnect();
       cleanupTouch?.();
+      hangulInputRef.current?.dispose();
+      hangulInputRef.current = null;
       terminalInstance.current?.dispose();
       terminalInstance.current = null;
       fitAddonRef.current = null;

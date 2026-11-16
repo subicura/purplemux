@@ -144,6 +144,32 @@ Development mode:
 pnpm dev
 ```
 
+#### Korean input in Safari
+
+Safari can compose Korean by replacing text (`insertReplacementText`) without
+standard composition events. With xterm.js 6.0, this can send only the initial
+jamo of a syllable. The terminal includes a WebKit-only compatibility handler
+that previews the pending syllable and commits it once when typing continues,
+a control key is pressed, or focus leaves the terminal. Standard composition
+events still use xterm's input handling.
+
+Run `pnpm test`, `pnpm tsc --noEmit`, and `pnpm lint` before building. An optional
+browser regression script replays input, deletion, rollover, paste, and focus
+events in Chromium and WebKit using a locally available Playwright installation:
+
+```bash
+PLAYWRIGHT_MODULE_PATH=/absolute/path/to/playwright node scripts/test-terminal-hangul.cjs
+```
+
+Install Chromium and WebKit through that Playwright installation first. The
+script uses isolated terminal instances and does not connect to live sessions.
+It verifies DOM event handling, not the operating system's IME. After `pnpm build`
+and restarting the server with the new build, reload Safari and manually check
+`안녕하세요`, `했어요`, Backspace, Space, and Enter. Building from a separate
+checkout/export avoids replacing `.next` files underneath a running server;
+keep the previous build for rollback. Electron and published npm packages need
+their own rebuilt release.
+
 #### Log level
 
 Set the overall level with `LOG_LEVEL` (default `info`).
