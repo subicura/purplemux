@@ -16,6 +16,7 @@ import { getStatusManager } from './src/lib/status-manager';
 import { ensureHookSettings, removePortFile } from './src/lib/hook-settings';
 import { enqueueSystemToast } from './src/lib/sync-server';
 import { getCliToken } from './src/lib/cli-token';
+import { UPLOAD_PATHS, handleUploadRequest } from './src/lib/upload-handler';
 import { acquireLock, releaseLock, registerLockCleanup } from './src/lib/lock';
 import { scanSessions, applyConfig } from './src/lib/tmux';
 import { initWorkspaceStore, getWorkspaces, writeAllWorkspacePrompts } from './src/lib/workspace-store';
@@ -223,6 +224,11 @@ const startDev = async (port: number, appDir: string, bindHost: string): Promise
       rejectRequest(res);
       return;
     }
+    const url = new URL(req.url ?? '', `http://localhost:${port}`);
+    if (req.method === 'POST' && UPLOAD_PATHS.has(url.pathname)) {
+      void handleUploadRequest(req, res, url.pathname);
+      return;
+    }
     handle(req, res);
   });
 
@@ -295,6 +301,11 @@ const startProd = async (port: number, appDir: string, bindHost: string): Promis
   const server = createServer((req, res) => {
     if (!isRequestAllowed(req.socket.remoteAddress)) {
       rejectRequest(res);
+      return;
+    }
+    const url = new URL(req.url ?? '', `http://localhost:${port}`);
+    if (req.method === 'POST' && UPLOAD_PATHS.has(url.pathname)) {
+      void handleUploadRequest(req, res, url.pathname);
       return;
     }
     proxyRequest(req, res, internalPort);
